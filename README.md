@@ -7,6 +7,7 @@
 ## 目录
 
 - [01 · 用订阅额度自动生成图片](tips/01-image-gen-with-subscription.md)
+- [02 · `agy -p`（print 模式）认证失效:交互能用、自动化全超时](tips/02-print-mode-auth-bug.md) ⚠ 1.0.3 已知 bug
 
 ## 脚本
 
