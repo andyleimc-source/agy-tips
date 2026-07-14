@@ -9,6 +9,7 @@
 - [01 · 用订阅额度自动生成图片](tips/01-image-gen-with-subscription.md)
 - [02 · `agy -p`（print 模式）认证失效:交互能用、自动化全超时](tips/02-print-mode-auth-bug.md) ⚠ 1.0.3 已知 bug
 - [03 · 让 agy 别再每步都问：默认自动批准所有工具权限](tips/03-auto-approve-all-permissions.md)
+- [04 · print 模式在新目录/worktree 里秒超时：文件夹未信任（非认证问题）](tips/04-worktree-untrusted-folder-print-timeout.md)
 
 ## 脚本
 
