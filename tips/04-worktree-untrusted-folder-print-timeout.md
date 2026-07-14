@@ -73,6 +73,45 @@ fi
 - **幂等**:已存在就不重复加。
 - 改的是用户级配置文件,和被信任的仓库无关,不会污染仓库 git。
 
+## 一劳永逸:把自动信任 baked 进 `agy()` 包装函数(交互用也不再弹)
+
+上面那段是**自动化/脚本**里起 agy 前手动补信任。但**你自己在终端敲 `agy`** 进一个新目录时,一样会弹「信任此文件夹?」——因为交互模式弹得出这个框,只是每个新目录都要点一次。如果你(像我一样)默认就是「所有目录都信任」,把自动信任直接塞进 [tip 03](03-auto-approve-all-permissions.md) 的 `agy()` 包装函数,以后**任何目录、交互还是 print,都不弹**:
+
+```bash
+# 起 agent 前把当前目录幂等塞进 trustedWorkspaces
+_agy_trust_pwd() {
+  local settings="$HOME/.gemini/antigravity-cli/settings.json"
+  [[ -f "$settings" ]] || return 0
+  python3 - "$settings" "$PWD" <<'PY' 2>/dev/null
+import json, sys
+path, wd = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(path))
+except Exception:
+    sys.exit(0)
+tw = d.setdefault("trustedWorkspaces", [])
+if wd not in tw:
+    tw.append(wd)
+    json.dump(d, open(path, "w"), indent=2, ensure_ascii=False)
+PY
+}
+agy() {
+  case "$1" in
+    changelog|install|help|models|plugin|plugins|update)
+      command agy "$@" ;;          # 子命令不认这些 flag,原样透传,也不碰信任
+    *)
+      _agy_trust_pwd                # ← 起 agent 前先信任当前目录
+      command agy --dangerously-skip-permissions "$@" ;;
+  esac
+}
+```
+
+要点:
+- **静默、失败也不挡启动**(配置文件不在 / JSON 坏了都直接放行,`2>/dev/null` + try/except 兜住)——包装函数绝不能因为这一步而让 `agy` 起不来。
+- 只在**跑 agent** 的分支注入;`models`/`update`/`plugin` 等子命令原样透传、不碰信任列表。
+- 和自动化脚本(如 sage 的 `agy-do.sh`)**互不影响**:那条路自带同样的注入,这里补的是「你手动在终端敲 agy」这条。
+- 想彻底静默(每次都不打印)就别在 python 里 `print`——上面这版故意不打印。
+
 ## 验证
 
 在一个**从没授权过**的新目录里:
