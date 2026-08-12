@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# agy-do <任务卡文件> [--here] [--wt <名>] [--timeout 45m]
+#
+# 施工模式的通用起子:CC(司机)写卡 → agy(Google Antigravity/Gemini,吃订阅额度)按卡施工 → CC 验收。
+# 项目无关版,住在 dotfiles,mkp/work 两台都有。sage 有自己更重的 Issue 闭环版(scripts/agy-do.sh),那边用那个。
+#
+#   agy-do tasks/加缩略图缓存.md            # 默认建隔离 worktree(.worktrees/<卡名>)
+#   agy-do tasks/xx.md --here               # 不建 worktree,原地干(重编译贵的项目:Tauri/Xcode/大 node_modules)
+#
+# 干完打印验收摘要给司机:改了哪些文件、自检结果、有没有「## agy 回执」、有没有逃逸。
+set -euo pipefail
+
+CARD_IN=""; HERE=false; WTNAME=""; TIMEOUT="45m"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --here) HERE=true; shift ;;
+    --wt) WTNAME="$2"; shift 2 ;;
+    --timeout) TIMEOUT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    *) CARD_IN="$1"; shift ;;
+  esac
+done
+
+[[ -n "$CARD_IN" ]] || { echo "用法: agy-do <任务卡文件> [--here] [--wt 名] [--timeout 45m]"; exit 1; }
+[[ -f "$CARD_IN" ]] || { echo "❌ 任务卡不存在: $CARD_IN(施工契约必须先写好)"; exit 1; }
+command -v agy >/dev/null || { echo "❌ 没装 agy(Google Antigravity CLI)"; exit 1; }
+
+MAIN="$(git rev-parse --show-toplevel)"
+BASE="$(git rev-parse --abbrev-ref HEAD)"
+CARD_ABS="$(cd "$(dirname "$CARD_IN")" && pwd)/$(basename "$CARD_IN")"
+SLUG="${WTNAME:-$(basename "${CARD_IN%.*}" | tr ' /' '--')}"
+
+# 1) 工作区:worktree 隔离(默认)或原地
+if $HERE; then
+  WT="$MAIN"
+  [[ -z "$(git -C "$MAIN" status --porcelain)" ]] || { echo "❌ --here 要求工作区干净(否则分不清哪些改动是 agy 干的)。先 commit 或 stash。"; exit 1; }
+  echo "→ 原地施工(--here),基线分支 $BASE"
+  HERE_EXCLUDE="$(git -C "$MAIN" rev-parse --path-format=absolute --git-path info/exclude)"
+  grep -qx '.agy.log' "$HERE_EXCLUDE" 2>/dev/null || echo '.agy.log' >> "$HERE_EXCLUDE"
+else
+  WT="$MAIN/.worktrees/$SLUG"
+  if [[ -d "$WT" ]]; then
+    echo "→ 复用已存在的 worktree $WT(返工重跑),先并回 $BASE"
+    git -C "$WT" merge --no-edit -q "$BASE" || { echo "❌ 合并 $BASE 有冲突,手动解决后重跑"; exit 1; }
+  else
+    echo "→ 建 worktree $WT(分支 task/$SLUG,基于 $BASE)"
+    git -C "$MAIN" worktree add -b "task/$SLUG" "$WT" "$BASE" >/dev/null
+    grep -qx '.worktrees/' "$MAIN/.git/info/exclude" 2>/dev/null || echo '.worktrees/' >> "$MAIN/.git/info/exclude"
+  fi
+  # 卡拷进 worktree,agy 读自己目录里的那份;排除掉免得被 agy 顺手提交
+  cp "$CARD_ABS" "$WT/TASK.md"
+  WT_EXCLUDE="$(git -C "$WT" rev-parse --path-format=absolute --git-path info/exclude)"
+  mkdir -p "$(dirname "$WT_EXCLUDE")"
+  grep -qx 'TASK.md' "$WT_EXCLUDE" 2>/dev/null || echo 'TASK.md' >> "$WT_EXCLUDE"
+  grep -qx '.agy.log' "$WT_EXCLUDE" 2>/dev/null || echo '.agy.log' >> "$WT_EXCLUDE"
+  CARD_ABS="$WT/TASK.md"
+fi
+WT_ABS="$(cd "$WT" && pwd)"
+CARD_REL="$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$CARD_ABS" "$WT_ABS")"
+
+# 2) 信任工作目录(agy-tips/04):agy 的 trustedWorkspaces 精确匹配绝对路径、不认父目录前缀。
+#    新 worktree = 新路径 = 未信任 → print 模式弹不出信任框 → 秒超时零输出(过去被误判成 OAuth 失效)。
+AGY_SETTINGS="$HOME/.gemini/antigravity-cli/settings.json"
+if [[ -f "$AGY_SETTINGS" ]]; then
+  python3 - "$AGY_SETTINGS" "$WT_ABS" <<'PY' || echo "⚠ 信任目录写入失败(继续,但可能秒超时)"
+import json, sys
+path, wt = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+tw = d.setdefault("trustedWorkspaces", [])
+if wt not in tw:
+    tw.append(wt); json.dump(d, open(path, "w"), indent=2, ensure_ascii=False)
+    print(f"→ 已信任工作目录:{wt}")
+PY
+else
+  echo "⚠ 未找到 $AGY_SETTINGS —— agy 可能没初始化;若下面秒超时,先手动 agy 授权一次。"
+fi
+
+PROJRULES=""
+[[ -f "$WT/CLAUDE.md" ]] && PROJRULES="1.5 完整读 ./CLAUDE.md —— 本项目的铁律与背景,和任务卡冲突时以任务卡为准、拿不准写回执。"
+LESSONS=""
+[[ -f "$WT/lessons.md" ]] && LESSONS="1.6 扫一眼 ./lessons.md —— 这些坑真踩过,别再踩。"
+
+read -r -d '' PROMPT <<EOF || true
+你是本项目的施工 agent(司机是 Claude,他写卡、你实现、他验收)。当前目录就是你的工作区。按顺序:
+0. 【工作区钉死,违反=事故】你唯一允许读写的目录树 = ${WT_ABS}(= 启动时的当前目录,开工先 pwd 自证)。禁止 cd 出去、禁止改工作区外任何路径;git 只在工作区内跑。$($HERE || echo "只准提交到分支 task/${SLUG},绝不准提交到 ${BASE}。worktree 里的 .git 是指向主仓的指针文件,不是让你把「项目根」解析回主仓的路。")
+1. 完整读 ./${CARD_REL} —— 你的唯一实现契约,严格照它,别自由发挥。
+${PROJRULES}
+${LESSONS}
+2. 只改契约允许的文件。这些一律别碰:plan.md / progress.md / decision.md / handoff.md / bug.md / lessons.md / CLAUDE.md / 别的任务卡。
+3. 卡里「只被 X 用」「现在的行为是 Y」这类前提,施工前自己 grep 复核一遍——卡可能写错;前提不成立就别改,写回执。
+4. 完成前自检:按卡里「怎么验收/自检」指定的命令跑,必须全绿。断言归零要靠真删除,不许靠改名/挪走糊弄。
+5. 全绿 → 用中文 commit,写清做了什么、为什么。若有歧义或没做完 → 别猜,在 ./${CARD_REL} 末尾追加「## agy 回执」写清楚,然后停。
+6. 最后只打印一段简短总结:改了哪些文件、自检结果、有没有回执。不要长篇贴代码或过程。
+EOF
+
+# 3) 施工前快照(逃逸检测用)
+BASE_BEFORE="$(git -C "$MAIN" rev-parse "$BASE")"
+HEAD_BEFORE="$(git -C "$WT" rev-parse HEAD)"
+MAIN_DIRTY_BEFORE="$(git -C "$MAIN" status --porcelain || true)"
+
+echo "→ 启动 agy 施工(print 模式,超时 $TIMEOUT)…日志:$WT/.agy.log"
+set +e
+( cd "$WT" && GIT_AUTHOR_NAME=agy GIT_AUTHOR_EMAIL=agy@antigravity \
+    agy --dangerously-skip-permissions --print-timeout "$TIMEOUT" -p "$PROMPT" ) 2>&1 | tee "$WT/.agy.log"
+AGY_RC=${PIPESTATUS[0]}
+set -e
+
+# 4) 逃逸检测(只报警不自动回滚:并行会话可能同时推进基线,自动 revert 比逃逸更危险)
+echo ""
+ESCAPE=0
+if ! $HERE; then
+  ESC="$(git -C "$MAIN" log --author=agy --format='%h %s' "${BASE_BEFORE}..${BASE}" 2>/dev/null || true)"
+  [[ -n "$ESC" ]] && { ESCAPE=1; echo "🚨 逃逸警报:施工期间 $BASE 上出现 agy 署名 commit:"; echo "$ESC"; echo "   → 先 git show 审:范围在卡允许清单内可收编,越界就 revert。"; }
+  NEW_DIRT="$(comm -13 <(printf '%s' "$MAIN_DIRTY_BEFORE" | sort) <(git -C "$MAIN" status --porcelain | sort) || true)"
+  [[ -n "$NEW_DIRT" ]] && { ESCAPE=1; echo "🚨 主仓工作区新增未提交改动(agy 写的?并行窗口写的?人工确认):"; echo "$NEW_DIRT"; }
+  [[ "$ESCAPE" == 0 ]] && echo "✓ 逃逸检测通过。"
+fi
+[[ "$(git -C "$WT" rev-parse HEAD)" == "$HEAD_BEFORE" ]] && echo "⚠ 没有任何新 commit —— 活可能没干完(看 .agy.log),或落在上面报警的位置。"
+
+# 5) 验收摘要
+echo ""
+echo "══════════ agy 施工结束(rc=$AGY_RC)· 验收摘要 ══════════"
+if $HERE; then
+  git -C "$WT" --no-pager log --oneline "${HEAD_BEFORE}..HEAD" || true
+  git -C "$WT" --no-pager diff --stat "${HEAD_BEFORE}..HEAD" || true
+  git -C "$WT" --no-pager status --short || true
+else
+  echo "— 分支 task/$SLUG 自己的 commit:"
+  git -C "$WT" --no-pager log --oneline "$BASE..HEAD" || true
+  echo "— 分支自己的改动(三点式,基线被并行推进也不失真):"
+  git -C "$WT" --no-pager diff --stat "$BASE...HEAD" || true
+fi
+echo "— 回执:"
+grep -q "## agy 回执" "$CARD_ABS" && echo "  ⚠ 有,看 $CARD_ABS 末尾" || echo "  无(agy 认为做完了)"
+echo "════════════════════════════════════════════════════════"
+if $HERE; then
+  echo "下一步(司机):审 diff + 跑验证 → 过则收编 commit;不过则改卡写返工要求后重跑。"
+else
+  echo "下一步(司机):审 diff + 跑验证 → 过则 git merge task/$SLUG 再 git worktree remove $WT;不过则改卡写返工要求后重跑 agy-do。"
+fi
