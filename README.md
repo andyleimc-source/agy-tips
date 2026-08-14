@@ -11,11 +11,15 @@
 - [03 · 让 agy 别再每步都问：默认自动批准所有工具权限](tips/03-auto-approve-all-permissions.md)
 - [04 · print 模式在新目录/worktree 里秒超时：文件夹未信任（非认证问题）](tips/04-worktree-untrusted-folder-print-timeout.md)
 - [05 · 施工模式：Claude Code 写卡 + agy 施工 + Claude 验收](tips/05-claude-drives-agy-construction-mode.md)
+- [06 · 给 agy 单开一条专用出口线路，治好 "User location is not supported"](tips/06-dedicated-exit-ip.md)
 
 ## 脚本
 
 - [`scripts/genimg.sh`](scripts/genimg.sh) — 一行命令出图
 - [`scripts/agy-do`](scripts/agy-do) — 按任务卡派 agy 施工（worktree 隔离 + 逃逸检测 + 验收摘要）
+- [`scripts/agy-tunnel`](scripts/agy-tunnel) — 自有服务器 SOCKS5 出口（up/down/status/ip）
+- [`scripts/agy-wrapper`](scripts/agy-wrapper) — 只给 agy 注入这条出口的代理外壳，通道断了自动降级
+- [`scripts/agy-tunnel.plist.template`](scripts/agy-tunnel.plist.template) — launchd 常驻（开机自启 + 掉线重连）
 
 ## 适用环境
 

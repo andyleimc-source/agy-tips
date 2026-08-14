@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  装到 ~/Library/LaunchAgents/local.agy-tunnel.plist,把 __AGY_TUNNEL__ 换成
+  agy-tunnel 脚本的绝对路径(launchd 不认 ~ 和 $HOME),然后:
+
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.agy-tunnel.plist
+    launchctl kickstart -k gui/$(id -u)/local.agy-tunnel
+
+  KeepAlive=true 负责掉线自动重连;RunAtLoad 负责开机自启。
+  ThrottleInterval=10 是防止服务器不可达时疯狂重试。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.agy-tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__AGY_TUNNEL__</string>
+    <string>up</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/tmp/agy-tunnel.log</string>
+  <key>StandardErrorPath</key><string>/tmp/agy-tunnel.log</string>
+</dict>
+</plist>

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# agy-tunnel — 给 agy 单独开一条到自有服务器的出口线路(SOCKS5,本地 127.0.0.1:7899)
+#
+# 为什么存在:agy 走机场/共享代理节点时,Google 会间歇性返回
+#   FAILED_PRECONDITION: User location is not supported for the API use
+# 同一节点、同一出口 IP,一轮里前几个请求成功、下一个被拒 —— 机场是几百人共用的机房段,
+# Google 的地址库对这类段判定飘忽。换节点没用(实测 5 个日本节点同属一个小机房段)。
+# 独占、固定的自有服务器 IP 判定稳定,故给 agy 专开一条,其他一切照旧走原来的代理。
+#
+#   agy-tunnel up|down|status|ip
+# 常驻由 launchd 负责(见 agy-tunnel.plist.template),本脚本 up 只做「没起就起」,幂等。
+#
+# 配置:改下面的 HOST,或用环境变量 AGY_TUNNEL_HOST / AGY_TUNNEL_PORT 覆盖。
+# 前置条件:本机 SSH 公钥已加进服务器的 ~/.ssh/authorized_keys(必须免密,
+#          脚本用 BatchMode=yes,要输密码就直接失败)。
+set -uo pipefail
+
+PORT="${AGY_TUNNEL_PORT:-7899}"
+HOST="${AGY_TUNNEL_HOST:-ubuntu@YOUR.SERVER.IP.HERE}"
+
+up() {
+  if nc -z -G 1 127.0.0.1 "$PORT" 2>/dev/null; then echo "已在运行(127.0.0.1:$PORT)"; return 0; fi
+  # -N 不开 shell;ExitOnForwardFailure 保证端口占不上就直接退(交给 launchd 重来,别假装活着)
+  ssh -N -D "127.0.0.1:$PORT" \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+      -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new \
+      -o BatchMode=yes \
+      "$HOST"
+}
+
+down() { pkill -f "ssh -N -D 127.0.0.1:$PORT" && echo "已停"; }
+
+status() {
+  if nc -z -G 1 127.0.0.1 "$PORT" 2>/dev/null; then echo "✓ 通道在(127.0.0.1:$PORT)"; else echo "✗ 通道不在"; return 1; fi
+}
+
+ip() { curl -s --max-time 10 --proxy "socks5h://127.0.0.1:$PORT" https://api.ipify.org; echo; }
+
+case "${1:-status}" in
+  up) up ;; down) down ;; status) status ;; ip) ip ;;
+  *) echo "用法: agy-tunnel up|down|status|ip"; exit 1 ;;
+esac

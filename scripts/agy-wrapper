@@ -1,0 +1,37 @@
+#!/bin/sh
+# agy 的代理外壳 —— 装成 ~/.local/overrides/agy(排在 PATH 最前,盖住真二进制)。
+#
+# 干两件事:
+#   1. 让 agy(且只让 agy)走自有出口 —— 见 agy-tunnel。共享机场 IP 是共用机房段,
+#      Google 判定飘忽,同一轮里前几个请求成功、下一个就 "User location is not supported",
+#      整轮被掐断。通道不在 → 退回原来的机场端口(能用,只是会偶发中断);都不在 → 裸连。
+#   2. 默认注入 --dangerously-skip-permissions(见 tip 03),已手动带则不重复。
+#      不想要这个行为就把最后两个 case 分支删掉,只留 exec "$REAL" "$@"。
+TUN="${AGY_TUNNEL_PORT:-7899}"      # 自有出口(SOCKS5)
+AIRPORT="${AGY_FALLBACK_PORT:-7897}" # 兜底:本机机场/系统代理的 http 端口
+P=""
+if nc -z -G 1 127.0.0.1 "$TUN" 2>/dev/null; then
+  P="socks5://127.0.0.1:$TUN"
+elif nc -z -G 1 127.0.0.1 "$AIRPORT" 2>/dev/null; then
+  P="http://127.0.0.1:$AIRPORT"
+fi
+if [ -n "$P" ]; then
+  export http_proxy="$P" https_proxy="$P" all_proxy="$P"
+  export HTTP_PROXY="$P" HTTPS_PROXY="$P" ALL_PROXY="$P"
+  export no_proxy="localhost,127.0.0.1" NO_PROXY="localhost,127.0.0.1"
+fi
+
+# 真二进制:装过 auto-updater 的机器上可能叫 agy-real,否则就是 agy。
+REAL="$HOME/.local/bin/agy-real"
+[ -x "$REAL" ] || REAL="$HOME/.local/bin/agy"
+# 自指防护:万一本壳被装到了真二进制的位置,直接停,别递归把机器打爆。
+case "$0" in "$REAL") echo "agy-wrapper: 装错位置了($0 == 真二进制路径),拒绝执行" >&2; exit 1 ;; esac
+
+# 这几个子命令不注入权限 flag
+case "${1:-}" in
+  changelog|install|help|models|plugin|plugins|update) exec "$REAL" "$@" ;;
+esac
+case " $* " in
+  *" --dangerously-skip-permissions "*) exec "$REAL" "$@" ;;
+  *) exec "$REAL" --dangerously-skip-permissions "$@" ;;
+esac
