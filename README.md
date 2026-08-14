@@ -12,6 +12,7 @@
 - [04 · print 模式在新目录/worktree 里秒超时：文件夹未信任（非认证问题）](tips/04-worktree-untrusted-folder-print-timeout.md)
 - [05 · 施工模式：Claude Code 写卡 + agy 施工 + Claude 验收](tips/05-claude-drives-agy-construction-mode.md)
 - [06 · 给 agy 单开一条专用出口线路，治好 "User location is not supported"](tips/06-dedicated-exit-ip.md)
+- [07 · 终端 Markdown 渲染与排版避坑：为什么会看到 #### 与最佳排版姿势](tips/07-terminal-markdown-rendering.md)
 
 ## 脚本
 
