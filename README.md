@@ -15,6 +15,8 @@
 - [07 · 终端 Markdown 渲染与排版避坑：为什么会看到 #### 与最佳排版姿势](tips/07-terminal-markdown-rendering.md)
 - [08 · 专用出口 IP 也不一定稳：Google 判的是 ASN 归属，不是「独不独占」](tips/08-exit-ip-asn-not-just-dedicated.md)
 - [09 · 隧道搭好了还是间歇性报错？大概率是调用方绕开了 wrapper](tips/09-callers-must-use-the-wrapper-not-the-binary.md)
+- [10 · 让 Claude Code 和 agy 在同一目录协同：AGENTS.md 薄壳 + 单一真相源](tips/10-agents-md-shared-project-context.md)
+- [11 · 自定义状态栏：一眼看到机型、执行模式、上下文余量和额度](tips/11-custom-statusline.md)
 
 ## 脚本
 
@@ -23,6 +25,7 @@
 - [`scripts/agy-tunnel`](scripts/agy-tunnel) — 自有服务器 SOCKS5 出口（up/down/status/ip）
 - [`scripts/agy-wrapper`](scripts/agy-wrapper) — 只给 agy 注入这条出口的代理外壳，通道断了自动降级
 - [`scripts/agy-tunnel.plist.template`](scripts/agy-tunnel.plist.template) — launchd 常驻（开机自启 + 掉线重连）
+- [`scripts/statusline.sh`](scripts/statusline.sh) — 状态栏脚本，见 tip 11
 
 ## 适用环境
 
