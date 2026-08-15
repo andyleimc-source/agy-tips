@@ -144,6 +144,10 @@ chmod +x /tmp/wt.sh && /tmp/wt.sh chat
 
 装完这套之后间歇性错误确实大幅减少,但没有归零——原因是判定看的不只是「独不独占」,还有这个 IP 背后的 ASN 归属信息。换成目标 API 所在云厂商自己的 IP 段才彻底稳。详见 [tips/08](08-exit-ip-asn-not-just-dedicated.md)。
 
+## 后续:隧道装对了,某个脚本还是间歇性报错
+
+排查了半天发现不是隧道的问题,是那个脚本自己硬编码了裸二进制路径,没走 wrapper。这类"看起来配对了、其实被绕过"的调用方错误很隐蔽，详见 [tips/09](09-callers-must-use-the-wrapper-not-the-binary.md)。
+
 ## 适用范围
 
 不只 agy。任何"必须走干净固定出口、又不想全局改代理"的 CLI 都能套这套：改 wrapper 里的 `REAL` 指向和软链名字即可。
