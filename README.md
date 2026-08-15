@@ -13,6 +13,7 @@
 - [05 · 施工模式：Claude Code 写卡 + agy 施工 + Claude 验收](tips/05-claude-drives-agy-construction-mode.md)
 - [06 · 给 agy 单开一条专用出口线路，治好 "User location is not supported"](tips/06-dedicated-exit-ip.md)
 - [07 · 终端 Markdown 渲染与排版避坑：为什么会看到 #### 与最佳排版姿势](tips/07-terminal-markdown-rendering.md)
+- [08 · 专用出口 IP 也不一定稳：Google 判的是 ASN 归属，不是「独不独占」](tips/08-exit-ip-asn-not-just-dedicated.md)
 
 ## 脚本
 

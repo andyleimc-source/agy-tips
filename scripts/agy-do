@@ -45,7 +45,11 @@ else
   else
     echo "→ 建 worktree $WT(分支 task/$SLUG,基于 $BASE)"
     git -C "$MAIN" worktree add -b "task/$SLUG" "$WT" "$BASE" >/dev/null
-    grep -qx '.worktrees/' "$MAIN/.git/info/exclude" 2>/dev/null || echo '.worktrees/' >> "$MAIN/.git/info/exclude"
+    # ⚠ 别写死 $MAIN/.git/info/exclude:司机自己就在一个 worktree 里时,.git 是**文件**不是目录,
+    #   直接拼路径会 "Not a directory" 当场挂掉。git rev-parse 会解析到真正的 exclude 位置。
+    MAIN_EXCLUDE="$(git -C "$MAIN" rev-parse --path-format=absolute --git-path info/exclude)"
+    mkdir -p "$(dirname "$MAIN_EXCLUDE")"
+    grep -qx '.worktrees/' "$MAIN_EXCLUDE" 2>/dev/null || echo '.worktrees/' >> "$MAIN_EXCLUDE"
   fi
   # 卡拷进 worktree,agy 读自己目录里的那份;排除掉免得被 agy 顺手提交
   cp "$CARD_ABS" "$WT/TASK.md"
@@ -98,12 +102,32 @@ BASE_BEFORE="$(git -C "$MAIN" rev-parse "$BASE")"
 HEAD_BEFORE="$(git -C "$WT" rev-parse HEAD)"
 MAIN_DIRTY_BEFORE="$(git -C "$MAIN" status --porcelain || true)"
 
-echo "→ 启动 agy 施工(print 模式,超时 $TIMEOUT)…日志:$WT/.agy.log"
-set +e
-( cd "$WT" && GIT_AUTHOR_NAME=agy GIT_AUTHOR_EMAIL=agy@antigravity \
-    agy --dangerously-skip-permissions --print-timeout "$TIMEOUT" -p "$PROMPT" ) 2>&1 | tee "$WT/.agy.log"
-AGY_RC=${PIPESTATUS[0]}
-set -e
+# Google 按 IP 的 ASN 注册信息判地区,出口 IP 判定会飘(见 tips/06、tips/08),间歇性返回
+#   FAILED_PRECONDITION (code 400): User location is not supported for the API use
+# agy 认定这个 400 是永久错误、一次都不重试,整轮直接终止 —— 非交互模式下就是白跑一趟。
+# 故在此自动重来,但**只在这轮零产出时**:HEAD 没动且工作区干净。
+# 否则等于在半成品上再施工一遍,比失败更糟。
+MAX_TRY=3
+TRY=1
+BACKOFF=30
+while :; do
+  echo "→ 启动 agy 施工(print 模式,超时 $TIMEOUT,第 $TRY/$MAX_TRY 次)…日志:$WT/.agy.log"
+  set +e
+  ( cd "$WT" && GIT_AUTHOR_NAME=agy GIT_AUTHOR_EMAIL=agy@antigravity \
+      agy --dangerously-skip-permissions --print-timeout "$TIMEOUT" -p "$PROMPT" ) 2>&1 | tee "$WT/.agy.log"
+  AGY_RC=${PIPESTATUS[0]}
+  set -e
+
+  grep -qi "location is not supported\|Agent execution terminated due to error" "$WT/.agy.log" || break
+  [[ "$(git -C "$WT" rev-parse HEAD)" == "$HEAD_BEFORE" ]] || break
+  [[ -z "$(git -C "$WT" status --porcelain)" ]] || break
+  [[ $TRY -lt $MAX_TRY ]] || { echo "⚠ 连续 $MAX_TRY 次被 Google 判地区拒绝,放弃。隔几分钟再跑同一张卡即可。"; break; }
+  mv -f "$WT/.agy.log" "$WT/.agy.log.try$TRY"
+  TRY=$((TRY+1))
+  echo "⚠ 被 Google 判地区拒绝且这轮零产出,${BACKOFF}s 后自动重来(上轮日志留在 .agy.log.try$((TRY-1)))…"
+  sleep "$BACKOFF"
+  BACKOFF=$((BACKOFF*2))
+done
 
 # 4) 逃逸检测(只报警不自动回滚:并行会话可能同时推进基线,自动 revert 比逃逸更危险)
 echo ""

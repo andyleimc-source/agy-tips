@@ -140,6 +140,10 @@ chmod +x /tmp/wt.sh && /tmp/wt.sh chat
 | `whence -p agy` 指向 `~/.local/bin/agy` | PATH 里 overrides 没排第一，检查 `.zshrc` 末尾那段是不是被后面的 prepend 顶掉了 |
 | 装了以后 agy 起不来 | 确认没把 wrapper 覆盖到 `~/.local/bin/agy`（真二进制约 170MB，几 KB 就是覆盖错了）。wrapper 里有自指防护会报错拦住 |
 
+## 后续:专用 IP 也不一定稳
+
+装完这套之后间歇性错误确实大幅减少,但没有归零——原因是判定看的不只是「独不独占」,还有这个 IP 背后的 ASN 归属信息。换成目标 API 所在云厂商自己的 IP 段才彻底稳。详见 [tips/08](08-exit-ip-asn-not-just-dedicated.md)。
+
 ## 适用范围
 
 不只 agy。任何"必须走干净固定出口、又不想全局改代理"的 CLI 都能套这套：改 wrapper 里的 `REAL` 指向和软链名字即可。
