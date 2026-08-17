@@ -21,7 +21,8 @@
 ## 脚本
 
 - [`scripts/genimg.sh`](scripts/genimg.sh) — 一行命令出图
-- [`scripts/agy-do`](scripts/agy-do) — 按任务卡派 agy 施工（worktree 隔离 + 逃逸检测 + 验收摘要）
+- [`scripts/agy-do`](scripts/agy-do) — 按任务卡派 agy 施工（worktree 隔离 + 逃逸检测 + 验收摘要，`--async` 后台跑）
+- [`scripts/agy-runs`](scripts/agy-runs) — 列出后台施工：在跑 / 待验收 / 失败，见 tip 05
 - [`scripts/agy-tunnel`](scripts/agy-tunnel) — 自有服务器 SOCKS5 出口（up/down/status/ip）
 - [`scripts/agy-wrapper`](scripts/agy-wrapper) — 只给 agy 注入这条出口的代理外壳，通道断了自动降级
 - [`scripts/agy-tunnel.plist.template`](scripts/agy-tunnel.plist.template) — launchd 常驻（开机自启 + 掉线重连）

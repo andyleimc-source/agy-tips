@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
-# agy-do <任务卡文件> [--here] [--wt <名>] [--timeout 45m]
+# agy-do <任务卡文件> [--async] [--here] [--wt <名>] [--timeout 45m]
 #
 # 施工模式的通用起子:CC(司机)写卡 → agy(Google Antigravity/Gemini,吃订阅额度)按卡施工 → CC 验收。
 # 项目无关版,住在 dotfiles,mkp/work 两台都有。sage 有自己更重的 Issue 闭环版(scripts/agy-do.sh),那边用那个。
 #
 #   agy-do tasks/加缩略图缓存.md            # 默认建隔离 worktree(.worktrees/<卡名>)
 #   agy-do tasks/xx.md --here               # 不建 worktree,原地干(重编译贵的项目:Tauri/Xcode/大 node_modules)
+#   agy-do tasks/xx.md --async              # 丢后台,立刻交还终端;完成信号 = ~/.agy-runs/<卡名>/exit 出现
 #
 # 干完打印验收摘要给司机:改了哪些文件、自检结果、有没有「## agy 回执」、有没有逃逸。
 set -euo pipefail
 
-CARD_IN=""; HERE=false; WTNAME=""; TIMEOUT="45m"
+CARD_IN=""; HERE=false; WTNAME=""; TIMEOUT="45m"; ASYNC=false; PASS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --here) HERE=true; shift ;;
-    --wt) WTNAME="$2"; shift 2 ;;
-    --timeout) TIMEOUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
-    *) CARD_IN="$1"; shift ;;
+    --here) HERE=true; PASS+=("$1"); shift ;;
+    --wt) WTNAME="$2"; PASS+=("$1" "$2"); shift 2 ;;
+    --timeout) TIMEOUT="$2"; PASS+=("$1" "$2"); shift 2 ;;
+    --async) ASYNC=true; shift ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    *) CARD_IN="$1"; PASS+=("$1"); shift ;;
   esac
 done
 
-[[ -n "$CARD_IN" ]] || { echo "用法: agy-do <任务卡文件> [--here] [--wt 名] [--timeout 45m]"; exit 1; }
+[[ -n "$CARD_IN" ]] || { echo "用法: agy-do <任务卡文件> [--async] [--here] [--wt 名] [--timeout 45m]"; exit 1; }
 [[ -f "$CARD_IN" ]] || { echo "❌ 任务卡不存在: $CARD_IN(施工契约必须先写好)"; exit 1; }
 command -v agy >/dev/null || { echo "❌ 没装 agy(Google Antigravity CLI)"; exit 1; }
 
@@ -29,6 +31,25 @@ MAIN="$(git rev-parse --show-toplevel)"
 BASE="$(git rev-parse --abbrev-ref HEAD)"
 CARD_ABS="$(cd "$(dirname "$CARD_IN")" && pwd)/$(basename "$CARD_IN")"
 SLUG="${WTNAME:-$(basename "${CARD_IN%.*}" | tr ' /' '--')}"
+
+# 0) --async:把自己丢后台,立刻交还终端。
+#    施工全程写 ~/.agy-runs/<slug>/out.log;干完(成功或失败)落 exit 文件,内容=退出码。
+#    「exit 文件出现」就是唯一的完成信号 —— 司机挂一句 until [ -f .../exit ] 的看门狗就能被自动叫醒,
+#    另开窗口人工起的也一样有,所以两边都能感知同一件事。
+if $ASYNC; then
+  RUN="$HOME/.agy-runs/$SLUG"
+  rm -rf "$RUN"; mkdir -p "$RUN"
+  SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  nohup env AGY_RUN="$RUN" AGY_CWD="$PWD" bash -c \
+    'cd "$AGY_CWD" && "$@" >"$AGY_RUN/out.log" 2>&1; echo $? >"$AGY_RUN/exit"' \
+    _ "$SELF" "${PASS[@]}" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  echo "→ 后台施工已启动:$SLUG"
+  echo "   日志:   $RUN/out.log"
+  echo "   完成标志:$RUN/exit(文件出现=干完了,内容是退出码)"
+  echo "   看门狗: until [ -f $RUN/exit ]; do sleep 20; done; echo \"agy 干完:$SLUG rc=\$(cat $RUN/exit)\""
+  exit 0
+fi
 
 # 1) 工作区:worktree 隔离(默认)或原地
 if $HERE; then
@@ -102,9 +123,9 @@ BASE_BEFORE="$(git -C "$MAIN" rev-parse "$BASE")"
 HEAD_BEFORE="$(git -C "$WT" rev-parse HEAD)"
 MAIN_DIRTY_BEFORE="$(git -C "$MAIN" status --porcelain || true)"
 
-# Google 按 IP 的 ASN 注册信息判地区,出口 IP 判定会飘(见 tips/06、tips/08),间歇性返回
+# Google 按 ASN 判地区,对出口 IP(腾讯云硅谷)的判定会飘,间歇性返回
 #   FAILED_PRECONDITION (code 400): User location is not supported for the API use
-# agy 认定这个 400 是永久错误、一次都不重试,整轮直接终止 —— 非交互模式下就是白跑一趟。
+# agy 认定 400 是永久错误、一次都不重试,整轮直接终止 —— 非交互模式下就是白跑一趟。
 # 故在此自动重来,但**只在这轮零产出时**:HEAD 没动且工作区干净。
 # 否则等于在半成品上再施工一遍,比失败更糟。
 MAX_TRY=3

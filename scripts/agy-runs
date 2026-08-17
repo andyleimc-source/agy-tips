@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# agy-runs                列出所有后台施工:在跑的 / 干完待验收的
+# agy-runs <slug>         打印那一轮的完整日志(末尾就是验收摘要)
+# agy-runs clean          删掉已完成的记录(在跑的不动)
+#
+# 记录由 `agy-do --async` 写在 ~/.agy-runs/<slug>/:out.log = 施工日志,exit = 完成标志(内容为退出码)。
+# 谁起的都写这儿 —— 所以另开窗口人工起的活,这里一样看得到。
+set -euo pipefail
+ROOT="$HOME/.agy-runs"
+[[ -d "$ROOT" ]] || { echo "还没有任何后台施工记录。"; exit 0; }
+
+case "${1:-}" in
+  -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
+  clean)
+    n=0
+    for d in "$ROOT"/*/; do
+      [[ -f "$d/exit" ]] || continue
+      rm -rf "$d"; n=$((n+1))
+    done
+    echo "清掉 $n 条已完成记录(在跑的保留)。"; exit 0 ;;
+  "") ;;
+  *)
+    D="$ROOT/$1"
+    [[ -d "$D" ]] || { echo "❌ 没有这一轮:$1"; exit 1; }
+    cat "$D/out.log" 2>/dev/null || echo "(还没有日志输出)"
+    exit 0 ;;
+esac
+
+found=0
+for d in "$ROOT"/*/; do
+  [[ -d "$d" ]] || continue
+  found=1
+  slug="$(basename "$d")"
+  start="$(stat -f %B "$d" 2>/dev/null || stat -c %W "$d" 2>/dev/null || echo 0)"
+  now="$(date +%s)"
+  mins=$(( (now - start) / 60 ))
+  if [[ -f "$d/exit" ]]; then
+    rc="$(cat "$d/exit")"
+    if [[ "$rc" == 0 ]]; then mark="✅ 待验收"; else mark="❌ 失败(rc=$rc)"; fi
+    # 从日志里捞两条司机最关心的信号,省得每次都去翻全文
+    extra=""
+    grep -q "## agy 回执\|⚠ 有,看" "$d/out.log" 2>/dev/null && extra="$extra ⚠有回执"
+    grep -q "没有任何新 commit" "$d/out.log" 2>/dev/null && extra="$extra ⚠零 commit"
+    grep -q "🚨" "$d/out.log" 2>/dev/null && extra="$extra 🚨逃逸警报"
+    printf '%s  %-28s 用时 %s 分钟%s\n' "$mark" "$slug" "$mins" "$extra"
+  else
+    printf '%s  %-28s 已跑 %s 分钟\n' "🔨 施工中" "$slug" "$mins"
+  fi
+done
+[[ "$found" == 1 ]] || echo "还没有任何后台施工记录。"
