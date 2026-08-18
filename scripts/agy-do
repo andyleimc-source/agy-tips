@@ -6,7 +6,7 @@
 #
 #   agy-do tasks/加缩略图缓存.md            # 默认建隔离 worktree(.worktrees/<卡名>)
 #   agy-do tasks/xx.md --here               # 不建 worktree,原地干(重编译贵的项目:Tauri/Xcode/大 node_modules)
-#   agy-do tasks/xx.md --async              # 丢后台,立刻交还终端;完成信号 = ~/.agy-runs/<卡名>/exit 出现
+#   agy-do tasks/xx.md --async              # 丢后台,立刻交还终端;完成信号 = ~/.agy-runs/<项目名>--<卡名>/exit 出现
 #
 # 干完打印验收摘要给司机:改了哪些文件、自检结果、有没有「## agy 回执」、有没有逃逸。
 set -euo pipefail
@@ -37,14 +37,24 @@ SLUG="${WTNAME:-$(basename "${CARD_IN%.*}" | tr ' /' '--')}"
 #    「exit 文件出现」就是唯一的完成信号 —— 司机挂一句 until [ -f .../exit ] 的看门狗就能被自动叫醒,
 #    另开窗口人工起的也一样有,所以两边都能感知同一件事。
 if $ASYNC; then
-  RUN="$HOME/.agy-runs/$SLUG"
+  # 记录目录带项目名前缀:不同项目同名卡不互相覆盖
+  RUNKEY="$(basename "$MAIN")--$SLUG"
+  RUN="$HOME/.agy-runs/$RUNKEY"
+  # 同一张卡还在跑就拒绝再起:rm -rf 会删掉在跑那轮的记录,旧进程死前还会把退出码
+  # 写进新目录,看门狗被假信号叫醒。进程还活着(pid 探得到)才算在跑;死了照常清掉重来。
+  if [[ -d "$RUN" && ! -f "$RUN/exit" ]]; then
+    if [[ -f "$RUN/pid" ]] && kill -0 "$(cat "$RUN/pid")" 2>/dev/null; then
+      echo "❌ 这张卡已有一轮在跑($RUNKEY,pid=$(cat "$RUN/pid"))。等它落 exit 文件,或先杀掉再重跑。"; exit 1
+    fi
+    echo "⚠ 上一轮异常中断(进程已死、没落 exit),清掉重来。"
+  fi
   rm -rf "$RUN"; mkdir -p "$RUN"
   SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
   nohup env AGY_RUN="$RUN" AGY_CWD="$PWD" bash -c \
-    'cd "$AGY_CWD" && "$@" >"$AGY_RUN/out.log" 2>&1; echo $? >"$AGY_RUN/exit"' \
+    'echo $$ >"$AGY_RUN/pid"; cd "$AGY_CWD" && "$@" >"$AGY_RUN/out.log" 2>&1; echo $? >"$AGY_RUN/exit"' \
     _ "$SELF" "${PASS[@]}" >/dev/null 2>&1 &
   disown 2>/dev/null || true
-  echo "→ 后台施工已启动:$SLUG"
+  echo "→ 后台施工已启动:$RUNKEY"
   echo "   日志:   $RUN/out.log"
   echo "   完成标志:$RUN/exit(文件出现=干完了,内容是退出码)"
   echo "   看门狗: until [ -f $RUN/exit ]; do sleep 20; done; echo \"agy 干完:$SLUG rc=\$(cat $RUN/exit)\""

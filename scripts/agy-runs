@@ -14,10 +14,13 @@ case "${1:-}" in
   clean)
     n=0
     for d in "$ROOT"/*/; do
-      [[ -f "$d/exit" ]] || continue
+      if [[ ! -f "$d/exit" ]]; then
+        # 没落 exit 但进程还活着 = 真在跑,保留;进程死了 = 异常中断的尸体,一并清
+        [[ -f "$d/pid" ]] && kill -0 "$(cat "$d/pid")" 2>/dev/null && continue
+      fi
       rm -rf "$d"; n=$((n+1))
     done
-    echo "清掉 $n 条已完成记录(在跑的保留)。"; exit 0 ;;
+    echo "清掉 $n 条记录(已完成 + 异常中断的;真在跑的保留)。"; exit 0 ;;
   "") ;;
   *)
     D="$ROOT/$1"
@@ -43,6 +46,9 @@ for d in "$ROOT"/*/; do
     grep -q "没有任何新 commit" "$d/out.log" 2>/dev/null && extra="$extra ⚠零 commit"
     grep -q "🚨" "$d/out.log" 2>/dev/null && extra="$extra 🚨逃逸警报"
     printf '%s  %-28s 用时 %s 分钟%s\n' "$mark" "$slug" "$mins" "$extra"
+  elif [[ -f "$d/pid" ]] && ! kill -0 "$(cat "$d/pid")" 2>/dev/null; then
+    # 有 pid 但进程没了、又没落 exit:机器重启/进程被杀,永远等不来完成信号
+    printf '%s  %-28s 已挂 %s 分钟(进程死了,exit 不会再出现;看日志后 clean 掉或重跑)\n' "💀 异常中断" "$slug" "$mins"
   else
     printf '%s  %-28s 已跑 %s 分钟\n' "🔨 施工中" "$slug" "$mins"
   fi

@@ -50,11 +50,11 @@ Claude 自己上手的只剩：几行小修、架构判断、tricky 逻辑、写
 
 前台跑法下，`agy-do` 一跑，司机就在那干等半小时，期间接不了别的话。
 
-`--async` 把施工丢到后台，日志落 `~/.agy-runs/<slug>/out.log`，**结束时写一个 `exit` 文件（内容 = 退出码）作为唯一完成信号**。司机挂一句看门狗就能被自动叫醒：
+`--async` 把施工丢到后台，日志落 `~/.agy-runs/<项目名>--<slug>/out.log`（目录带项目名前缀，不同项目的同名卡不互相覆盖；同名卡在跑时再起一次会被拒绝），**结束时写一个 `exit` 文件（内容 = 退出码）作为唯一完成信号**。司机挂一句看门狗就能被自动叫醒：
 
 ```bash
-until [ -f ~/.agy-runs/<slug>/exit ]; do sleep 20; done
-echo "干完了 rc=$(cat ~/.agy-runs/<slug>/exit)"
+until [ -f ~/.agy-runs/<项目名>--<slug>/exit ]; do sleep 20; done
+echo "干完了 rc=$(cat ~/.agy-runs/<项目名>--<slug>/exit)"
 ```
 
 两个设计点：
