@@ -18,6 +18,7 @@
 - [10 · 让 Claude Code 和 agy 在同一目录协同：AGENTS.md 薄壳 + 单一真相源](tips/10-agents-md-shared-project-context.md)
 - [11 · 自定义状态栏：一眼看到机型、执行模式、上下文余量和额度](tips/11-custom-statusline.md)
 - [12 · 汉化 /resume 英文会话标题：包装层退出时自动异步回写 SQLite](tips/12-auto-translate-resume-titles.md)
+- [13 · 隧道断过一次，任务就跟着挂：重启真空期 + 22 端口偶发黑洞](tips/13-tunnel-restart-gap-and-ssh22-blackhole.md)
 
 ## 脚本
 

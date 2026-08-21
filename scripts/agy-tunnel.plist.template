@@ -8,7 +8,12 @@
     launchctl kickstart -k gui/$(id -u)/local.agy-tunnel
 
   KeepAlive=true 负责掉线自动重连;RunAtLoad 负责开机自启。
-  ThrottleInterval=10 是防止服务器不可达时疯狂重试。
+  ThrottleInterval 是 kill 到重启之间的最短间隔——别设太大,tips/13 踩过:设成 10
+  秒时,健康检查一杀掉进程,这 10 秒 + 握手耗时全是真空期,期间的 agy 请求必挂。
+
+  配一个「真走一次代理请求」的健康检查(见 agy-tunnel 的 healthcheck 子命令),另开
+  一个每几分钟跑一次的 launchd job(StartInterval,不是 KeepAlive),同样把
+  __AGY_TUNNEL__ 换成绝对路径、参数换成 healthcheck 即可,这里不重复贴一份。
 -->
 <plist version="1.0">
 <dict>
@@ -20,7 +25,7 @@
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ThrottleInterval</key><integer>2</integer>
   <key>StandardOutPath</key><string>/tmp/agy-tunnel.log</string>
   <key>StandardErrorPath</key><string>/tmp/agy-tunnel.log</string>
 </dict>

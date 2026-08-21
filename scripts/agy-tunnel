@@ -11,22 +11,44 @@
 # 换成一个西方主流 ASN(Cloudflare WARP)反而更差。唯一稳定的是主流云厂商在目标
 # 区域自己的 IP 段(比如就用 Google 自己的 GCP,在美区开一台最小机型)。详见 tips/08。
 #
-#   agy-tunnel up|down|status|ip
+#   agy-tunnel up|down|status|ip|healthcheck
 # 常驻由 launchd 负责(见 agy-tunnel.plist.template),本脚本 up 只做「没起就起」,幂等。
 #
 # 配置:改下面的 HOST,或用环境变量 AGY_TUNNEL_HOST / AGY_TUNNEL_PORT / AGY_TUNNEL_IDENTITY 覆盖。
 # 前置条件:本机 SSH 公钥已加进服务器的 ~/.ssh/authorized_keys(必须免密,
 #          脚本用 BatchMode=yes,要输密码就直接失败)。
+#
+# ⚠ 踩过的坑(详见 tips/13):
+# 1. healthcheck 一探测失败就 kill,单次网络抖动也会误杀——kill 到 launchd 重新拉起
+#    ssh 进程之间有个真空期(本地端口完全消失),同时期跑的任务会直接报错。改成
+#    「连续两次探测都失败才 kill」,一次性抖动不会触发重启。
+# 2. 只用 22 端口连服务器,遇到 GFW 对 22 端口的偶发针对性封锁就彻底连不上
+#    (亲测撞过一次连续 12 分钟)。给服务器 sshd 额外开一个 443(保留 22,别关),
+#    连不上 22 就自动切 443,两条腿走路。
+# 3. 曾尝试用 gost 常驻监听、接力 SSH 上游连接,让本地端口彻底不消失(理论上比
+#    「healthcheck 少误杀」更彻底)。实测 gost 3.x 的 ssh dialer 对部分 OpenSSH
+#    server 有兼容性 bug —— SOCKS5 认证/连接都成功,但请求 direct-tcpip 转发时被
+#    服务器拒绝(`ssh: rejected: connect failed (open failed)`),服务器侧抓包确认
+#    压根没发出对目标地址的连接尝试。GitHub 上有独立的同类报告
+#    (go-gost/gost#257)。如果你也想走这条路,先小范围验证 forward+ssh 能不能
+#    实际转发成功,别直接上生产。
 set -uo pipefail
 
 PORT="${AGY_TUNNEL_PORT:-7899}"
 HOST="${AGY_TUNNEL_HOST:-ubuntu@YOUR.SERVER.IP.HERE}"
 IDENTITY="${AGY_TUNNEL_IDENTITY:-}"
+REMOTE_IP="${AGY_TUNNEL_REMOTE_IP:-${HOST#*@}}"
+FAILCOUNT_FILE="${TMPDIR:-/tmp}/agy-tunnel-failcount"
 
 up() {
   if nc -z -G 1 127.0.0.1 "$PORT" 2>/dev/null; then echo "已在运行(127.0.0.1:$PORT)"; return 0; fi
+  # 服务器若额外开了 443(见坑 2),优先走 443 躲开针对 22 的封锁;3 秒内探测不到就退回 22。
+  # 没开 443 也没关系,探测失败会自然退回 22,行为等同没有这一步。
+  local sshport=22
+  nc -z -G 3 "$REMOTE_IP" 443 2>/dev/null && sshport=443
   # -N 不开 shell;ExitOnForwardFailure 保证端口占不上就直接退(交给 launchd 重来,别假装活着)
   ssh -N -D "127.0.0.1:$PORT" \
+      -p "$sshport" \
       ${IDENTITY:+-i "$IDENTITY"} \
       -o ExitOnForwardFailure=yes \
       -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
@@ -43,7 +65,27 @@ status() {
 
 ip() { curl -s --max-time 10 --proxy "socks5h://127.0.0.1:$PORT" https://api.ipify.org; echo; }
 
+# 端口占着但不转发的"卡死"状态 nc 探测不出来(TCP 能连上,只是没数据)——
+# 真走一次代理请求才能测出来。由 launchd 每几分钟跑一次(见坑 1,连续两次
+# 都失败才 kill,避免单次抖动误杀制造一次不必要的真空期)。
+healthcheck() {
+  if curl -s --max-time 10 --proxy "socks5h://127.0.0.1:$PORT" https://api.ipify.org >/dev/null 2>&1; then
+    rm -f "$FAILCOUNT_FILE"
+    return 0
+  fi
+  local fails=1
+  [[ -f "$FAILCOUNT_FILE" ]] && fails=$(($(cat "$FAILCOUNT_FILE" 2>/dev/null || echo 0) + 1))
+  echo "$fails" > "$FAILCOUNT_FILE"
+  if [[ "$fails" -lt 2 ]]; then
+    echo "$(date '+%F %T') 健康检查失败(第 ${fails} 次,再抖一次才 kill)" >> "${TMPDIR:-/tmp}/agy-tunnel.log"
+    return 0
+  fi
+  rm -f "$FAILCOUNT_FILE"
+  echo "$(date '+%F %T') 连续两次健康检查失败,kill 重启" >> "${TMPDIR:-/tmp}/agy-tunnel.log"
+  pkill -f "ssh -N -D 127.0.0.1:$PORT" 2>/dev/null || true
+}
+
 case "${1:-status}" in
-  up) up ;; down) down ;; status) status ;; ip) ip ;;
-  *) echo "用法: agy-tunnel up|down|status|ip"; exit 1 ;;
+  up) up ;; down) down ;; status) status ;; ip) ip ;; healthcheck) healthcheck ;;
+  *) echo "用法: agy-tunnel up|down|status|ip|healthcheck"; exit 1 ;;
 esac
