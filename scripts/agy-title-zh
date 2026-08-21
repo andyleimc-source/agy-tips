@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""
+agy-title-zh: 自动将 ~/.gemini/antigravity-cli/conversation_summaries.db 中的英文会话标题汉化。
+供 agy-wrapper 在会话退出时后台异步调用，或手动执行全量汉化。
+"""
+
+import os
+import sys
+import sqlite3
+import urllib.request
+import urllib.parse
+import json
+import subprocess
+import re
+
+DB_PATH = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
+
+def has_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+def check_proxy_works(proxy: str) -> bool:
+    test_url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=hi"
+    cmd = ["curl", "-s", "--max-time", "1.5", "-x", proxy, test_url]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        return res.returncode == 0 and "你好" in res.stdout
+    except Exception:
+        return False
+
+def get_proxy() -> str:
+    # 优先测试自有硅谷通道 7899
+    if check_proxy_works("socks5://127.0.0.1:7899"):
+        return "socks5://127.0.0.1:7899"
+    # 其次测试机场 7897
+    if check_proxy_works("http://127.0.0.1:7897"):
+        return "http://127.0.0.1:7897"
+    return os.environ.get("all_proxy") or os.environ.get("https_proxy") or os.environ.get("http_proxy") or ""
+
+def clean_for_translation(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if len(cleaned) > 80:
+        cleaned = cleaned[:80]
+    return cleaned
+
+def translate_batch(texts: list[str], proxy: str) -> list[str]:
+    if not texts:
+        return []
+    cleaned_texts = [clean_for_translation(t) for t in texts]
+    joined = "\n".join(cleaned_texts)
+    url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=" + urllib.parse.quote(joined)
+    
+    cmd = ["curl", "-s", "--max-time", "6"]
+    if proxy:
+        cmd.extend(["-x", proxy])
+    cmd.append(url)
+    
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        if res.returncode != 0 or not res.stdout.strip():
+            return texts
+        data = json.loads(res.stdout)
+        translated_parts = [part[0] for part in data[0] if part[0]]
+        full_text = "".join(translated_parts)
+        results = full_text.split("\n")
+        if len(results) == len(texts):
+            return [r.strip() for r in results]
+    except Exception:
+        pass
+    return texts
+
+def main():
+    if not os.path.exists(DB_PATH):
+        return
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT conversation_id, title, preview FROM conversation_summaries WHERE preview != ''")
+        rows = c.fetchall()
+
+        to_translate = []
+        for cid, title, preview in rows:
+            clean_preview = preview.strip()
+            if clean_preview and not has_chinese(clean_preview) and re.search(r"[a-zA-Z]", clean_preview):
+                to_translate.append((cid, clean_preview))
+
+        if not to_translate:
+            conn.close()
+            return
+
+        proxy = get_proxy()
+        
+        batch_size = 30
+        updated_count = 0
+
+        for i in range(0, len(to_translate), batch_size):
+            batch = to_translate[i:i + batch_size]
+            cids = [item[0] for item in batch]
+            orig_texts = [item[1] for item in batch]
+            
+            translated_texts = translate_batch(orig_texts, proxy)
+            
+            for cid, orig, trans in zip(cids, orig_texts, translated_texts):
+                if trans and trans != orig and has_chinese(trans):
+                    if len(trans) > 25:
+                        trans = trans[:25]
+                    c.execute("UPDATE conversation_summaries SET preview = ? WHERE conversation_id = ?", (trans, cid))
+                    updated_count += 1
+            conn.commit()
+
+        conn.close()
+        
+        if "-v" in sys.argv or "--verbose" in sys.argv:
+            print(f"✓ 成功汉化 {updated_count} 条会话标题")
+    except Exception as e:
+        if "-v" in sys.argv or "--verbose" in sys.argv:
+            print(f"Error: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()

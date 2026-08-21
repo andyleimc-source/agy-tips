@@ -17,6 +17,7 @@
 - [09 · 隧道搭好了还是间歇性报错？大概率是调用方绕开了 wrapper](tips/09-callers-must-use-the-wrapper-not-the-binary.md)
 - [10 · 让 Claude Code 和 agy 在同一目录协同：AGENTS.md 薄壳 + 单一真相源](tips/10-agents-md-shared-project-context.md)
 - [11 · 自定义状态栏：一眼看到机型、执行模式、上下文余量和额度](tips/11-custom-statusline.md)
+- [12 · 汉化 /resume 英文会话标题：包装层退出时自动异步回写 SQLite](tips/12-auto-translate-resume-titles.md)
 
 ## 脚本
 
@@ -24,7 +25,8 @@
 - [`scripts/agy-do`](scripts/agy-do) — 按任务卡派 agy 施工（worktree 隔离 + 逃逸检测 + 验收摘要，`--async` 后台跑）
 - [`scripts/agy-runs`](scripts/agy-runs) — 列出后台施工：在跑 / 待验收 / 失败，见 tip 05
 - [`scripts/agy-tunnel`](scripts/agy-tunnel) — 自有服务器 SOCKS5 出口（up/down/status/ip）
-- [`scripts/agy-wrapper`](scripts/agy-wrapper) — 只给 agy 注入这条出口的代理外壳，通道断了自动降级
+- [`scripts/agy-wrapper`](scripts/agy-wrapper) — 只给 agy 注入这条出口的代理外壳，通道断了自动降级；会话退出自动异步汉化标题
+- [`scripts/agy-title-zh`](scripts/agy-title-zh) — 扫描并汉化 SQLite 会话标题，见 tip 12
 - [`scripts/agy-tunnel.plist.template`](scripts/agy-tunnel.plist.template) — launchd 常驻（开机自启 + 掉线重连）
 - [`scripts/statusline.sh`](scripts/statusline.sh) — 状态栏脚本，见 tip 11
 

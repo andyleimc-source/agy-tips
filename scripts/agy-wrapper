@@ -1,14 +1,13 @@
 #!/bin/sh
-# agy 的代理外壳 —— 装成 ~/.local/overrides/agy(排在 PATH 最前,盖住真二进制)。
+# agy 的代理外壳 —— setup-agy.sh 把它装成 ~/.local/overrides/agy(排在 PATH 最前,盖住真二进制)。
 #
 # 干两件事:
-#   1. 让 agy(且只让 agy)走自有出口 —— 见 agy-tunnel。共享机场 IP 是共用机房段,
-#      Google 判定飘忽,同一轮里前几个请求成功、下一个就 "User location is not supported",
-#      整轮被掐断。通道不在 → 退回原来的机场端口(能用,只是会偶发中断);都不在 → 裸连。
-#   2. 默认注入 --dangerously-skip-permissions(见 tip 03),已手动带则不重复。
-#      不想要这个行为就把最后两个 case 分支删掉,只留 exec "$REAL" "$@"。
-TUN="${AGY_TUNNEL_PORT:-7899}"      # 自有出口(SOCKS5)
-AIRPORT="${AGY_FALLBACK_PORT:-7897}" # 兜底:本机机场/系统代理的 http 端口
+#   1. 让 agy(且只让 agy)走自有硅谷出口 —— 见 agy-tunnel。机场 IP 是共用机房段,Google 判定飘忽,
+#      同一轮里前几个请求成功、下一个就 "User location is not supported",整轮被掐断。
+#      通道不在 → 退回机场 7897(能用,只是会偶发中断);都不在 → 裸连(会"每次重登")。
+#   2. 默认注入 --dangerously-skip-permissions(Andy 要求最大权限),已手动带则不重复。
+TUN=7899
+AIRPORT=7897
 P=""
 if nc -z -G 1 127.0.0.1 "$TUN" 2>/dev/null; then
   P="socks5://127.0.0.1:$TUN"
@@ -21,17 +20,38 @@ if [ -n "$P" ]; then
   export no_proxy="localhost,127.0.0.1" NO_PROXY="localhost,127.0.0.1"
 fi
 
-# 真二进制:装过 auto-updater 的机器上可能叫 agy-real,否则就是 agy。
+# 真二进制:mkp 叫 agy-real(auto-updater 更新的是它),work 就叫 agy。
 REAL="$HOME/.local/bin/agy-real"
 [ -x "$REAL" ] || REAL="$HOME/.local/bin/agy"
 # 自指防护:万一本壳被装到了真二进制的位置,直接停,别递归把机器打爆。
 case "$0" in "$REAL") echo "agy-wrapper: 装错位置了($0 == 真二进制路径),拒绝执行" >&2; exit 1 ;; esac
 
-# 这几个子命令不注入权限 flag
+# 这几个子命令不注入任何 flag(与 .zshrc 里的 agy 函数保持一致)
 case "${1:-}" in
   changelog|install|help|models|plugin|plugins|update) exec "$REAL" "$@" ;;
 esac
+
+# 3. 把当前目录钉成工作区。
+# ⚠⚠ agy 在 -p(print/非交互)模式下**没有工作区**,默认落在
+#   ~/.gemini/antigravity-cli/scratch —— 读不到项目的 AGENTS.md,也读不到
+#   .agents/skills/,于是它一口咬定"我没有 mailroom 这个 skill",整轮空转**还不报错**。
+#   实测:同一句话不加 --add-dir 答"没有",加了答"有"。
+#   交互模式本来就认 cwd,重复钉一次无害,所以不分模式一律补,少一个要记的规矩。
+ADD_DIR=""
 case " $* " in
-  *" --dangerously-skip-permissions "*) exec "$REAL" "$@" ;;
-  *) exec "$REAL" --dangerously-skip-permissions "$@" ;;
+  *" --add-dir "*) ;;                     # 自己写了就不插手
+  *) ADD_DIR="$PWD" ;;
 esac
+
+set -- ${ADD_DIR:+--add-dir "$ADD_DIR"} "$@"
+case " $* " in
+  *" --dangerously-skip-permissions "*) "$REAL" "$@" ;;
+  *) "$REAL" --dangerously-skip-permissions "$@" ;;
+esac
+RC=$?
+
+# 会话退出后后台异步汉化会话标题，不阻塞终端
+( which agy-title-zh >/dev/null 2>&1 && agy-title-zh >/dev/null 2>&1 || "$HOME/dotfiles/bin/agy-title-zh" >/dev/null 2>&1 & )
+
+exit $RC
+
