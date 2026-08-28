@@ -1,39 +1,73 @@
 #!/usr/bin/env bash
-# agy-ps —— 列出当前活着的 agy 实例(带存活时长、CPU、工作目录),-k 清掉闲置的。
+# agy-ps —— 列出活着的 agy 实例，标出「谁已经没人用了」，-k 清掉。
 #
 # 为什么需要:每个 agy 实例都带一个「每小时刷 OAuth token」的后台协程,而 token 全局只有
 # 一份。实例一多,A 刷出来的新 token 就把 B 手里的作废,B 下次调模型吃 401
 # UNAUTHENTICATED —— agy 在 -p 模式下只报一句 "Agent execution terminated due to error",
 # 看着像断网,排查会被带到代理上去(2026-08-28 就绕了一圈)。
 #
-#   agy-ps      只看
-#   agy-ps -k   杀掉「CPU 近似 0 且已存活 > 2 小时」的闲置实例(当前正在跑的不动)
+# ⚠ 判「闲不闲」不能看进程存活时长,也不能看 CPU:
+#   - 存活久 ≠ 没在用。实测有个开了 6.5 小时、45 分钟前还在对话的会话被误判成僵尸。
+#   - CPU≈0 ≠ 没在用。agy 等你打字的时候就是 0%。
+#   - 日志还在写 ≠ 有人在用。后台刷 token/配额的心跳一直在写日志。
+#   真正的判据是**最后一次人类输入**(日志里的 HandleUserInput),从那儿算多久没动静。
+#
+#   agy-ps        只看
+#   agy-ps -k     杀掉超过 2 小时没人说过话的(可用 AGY_PS_IDLE_HOURS 改)
 set -uo pipefail
-PAT='\.local/bin/agy .*--dangerously-skip-permissions'
+IDLE_H="${AGY_PS_IDLE_HOURS:-2}"
+IDLE_S=$(( IDLE_H * 3600 ))
 KILL=0
 [[ "${1:-}" == "-k" ]] && KILL=1
 
-rows=$(ps -Ao pid,etime,%cpu,command | grep -E "$PAT" | grep -v grep)
+rows=$(ps -Ao pid,etime,command | grep -E '\.local/bin/agy ' | grep -v grep)
 [[ -z "$rows" ]] && { echo "没有 agy 实例在跑"; exit 0; }
 
-printf "%-8s %-14s %-6s %s\n" PID 存活 CPU% 工作目录
-while read -r pid etime cpu rest; do
-  dir=$(sed -E 's/.*--add-dir ([^ ]+).*/\1/' <<<"$rest")
-  [[ "$dir" == "$rest" ]] && dir="(无)"
-  # 闲置判据:CPU < 1% 且存活 > 2 小时。
-  # etime 三种格式:MM:SS / HH:MM:SS / D-HH:MM:SS —— 早先按冒号个数数会把 90 分钟
-  # 也算成「超 2 小时」,这里老老实实换算成秒。
-  secs=$(awk -F'[-:]' '{ if (NF==4) print $1*86400+$2*3600+$3*60+$4;
-                         else if (NF==3) print $1*3600+$2*60+$3;
-                         else print $1*60+$2 }' <<<"$etime")
-  idle=0
-  if awk "BEGIN{exit !($cpu < 1)}" && [[ "${secs:-0}" -gt 7200 ]]; then idle=1; fi
-  mark=""; [[ "$idle" == 1 ]] && mark="  ← 闲置"
-  printf "%-8s %-14s %-6s %s%s\n" "$pid" "$etime" "$cpu" "$dir" "$mark"
-  if [[ "$KILL" == 1 && "$idle" == 1 ]]; then
-    kill "$pid" 2>/dev/null && echo "         已杀 $pid"
+now=$(date +%s)
+printf "%-7s %-12s %-11s   %-24s  %s\n" PID 存活 最后说话 工作目录 状态
+while read -r pid etime rest; do
+  dir=$(sed -E 's/.*--add-dir ([^ ]+).*/\1/' <<<"$rest"); [[ "$dir" == "$rest" ]] && dir="(无)"
+  dir="~${dir#$HOME}"
+
+  # 找到这个实例自己的日志(每个实例开一个 cli-<启动时间>.log,用 lsof 精确定位)
+  log=$(lsof -p "$pid" 2>/dev/null | grep -oE '/[^ ]*antigravity-cli/log/cli-[0-9_]+\.log' | head -1)
+  last_ts=""; last_txt=""
+  if [[ -n "$log" && -r "$log" ]]; then
+    line=$(grep -a "HandleUserInput called with text" "$log" 2>/dev/null | tail -1)
+    if [[ -n "$line" ]]; then
+      # 日志时间戳形如 I0828 16:47:31.123456,只有月日时分秒,没有年 —— 按今年算
+      md=$(sed -E 's/.*I([0-9]{4}) ([0-9:]{8}).*/\1 \2/' <<<"$line")
+      mon=${md:0:2}; day=${md:2:2}; hms=${md:5}
+      last_ts=$(date -j -f "%Y-%m-%d %H:%M:%S" "$(date +%Y)-$mon-$day $hms" +%s 2>/dev/null)
+      last_txt=$(sed -E 's/.*with text: "?([^"]{0,18}).*/\1/' <<<"$line")
+    fi
+  fi
+
+  if [[ -n "$last_ts" ]]; then
+    quiet=$(( now - last_ts ))
+    shown=$(date -r "$last_ts" +"%m-%d %H:%M" 2>/dev/null)
+  else
+    # 「从未输入」且刚开不到 30 分钟 = 刚打开还没来得及说话,别杀
+    if [[ "${etime}" == *-* ]] || [[ $(tr -cd ':' <<<"$etime" | wc -c) -ge 2 ]]; then
+      quiet=999999
+    else
+      mm=${etime%%:*}; quiet=$(( 10#${mm:-0} * 60 ))
+    fi
+    shown="从未输入"
+  fi
+
+  state="在用"
+  (( quiet > IDLE_S )) && state="闲置 ← 可杀"
+  pad() { # 按显示宽度补空格($1=内容 $2=目标列宽);中文一个字占两列,printf 只算一个字符
+    local w; w=$(awk -v s="$1" 'BEGIN{n=0;for(i=1;i<=length(s);i++){c=substr(s,i,1);n+=(c ~ /[\x00-\x7f]/)?1:2}print n}')
+    printf "%s%*s" "$1" $(( $2 - w > 0 ? $2 - w : 1 )) ""
+  }
+  printf "%-7s %-12s %s%s %s %s\n" "$pid" "$etime" "$(pad "$shown" 14)" "$(pad "$dir" 26)" "$state" "${last_txt:+· $last_txt}"
+
+  if [[ "$KILL" == 1 && "$quiet" -gt "$IDLE_S" ]]; then
+    kill "$pid" 2>/dev/null && echo "        已杀 $pid"
   fi
 done <<<"$rows"
 
-[[ "$KILL" == 0 ]] && echo && echo "要清掉标了「闲置」的:agy-ps -k"
+[[ "$KILL" == 0 ]] && { echo; echo "清掉标了「闲置」的:agy-ps -k   (默认门槛 ${IDLE_H} 小时没说话)"; }
 exit 0
