@@ -5,7 +5,8 @@
 #   1. 让 agy(且只让 agy)走自有硅谷出口 —— 见 agy-tunnel。机场 IP 是共用机房段,Google 判定飘忽,
 #      同一轮里前几个请求成功、下一个就 "User location is not supported",整轮被掐断。
 #      通道不在 → 退回机场 7897(能用,只是会偶发中断);都不在 → 裸连(会"每次重登")。
-#   2. 默认注入 --dangerously-skip-permissions(Andy 要求最大权限),已手动带则不重复。
+#   2. 默认注入 --dangerously-skip-permissions,已手动带则不重复。
+#   3. 实例开太多时提前告警 —— 多实例会互相刷掉 OAuth token,见下面和 tips/15。
 TUN=7899
 AIRPORT=7897
 P=""
@@ -20,7 +21,19 @@ if [ -n "$P" ]; then
   export no_proxy="localhost,127.0.0.1" NO_PROXY="localhost,127.0.0.1"
 fi
 
-# 真二进制:mkp 叫 agy-real(auto-updater 更新的是它),work 就叫 agy。
+# 并发实例告警 —— tips/15 的 401 根因。
+# 每个 agy 实例都自带一个「每小时刷 OAuth token」的后台协程,而 token 全局只有一份
+# (~/.gemini/antigravity-cli/antigravity-oauth-token)。开着一堆实例时,A 刷出的新 token
+# 会把 B 手里那个作废,B 下一次调模型就吃
+#   UNAUTHENTICATED (code 401): Request had invalid authentication credentials
+# 而 agy 在 -p 模式下只打一句 "Agent execution terminated due to error",看着像断网。
+_agy_live=$(pgrep -f "\.local/bin/agy .*--dangerously-skip-permissions" 2>/dev/null | wc -l | tr -d ' ')
+if [ "${_agy_live:-0}" -ge 3 ]; then
+  echo "⚠ 已经有 ${_agy_live} 个 agy 实例在跑,它们会互相刷掉对方的 OAuth token(报 401,长得像断网)。" >&2
+  echo "  看一眼谁是僵尸:agy-ps    清掉:agy-ps -k" >&2
+fi
+
+# 真二进制:有的机器上 auto-updater 更新的是 agy-real,有的就叫 agy,两个都试。
 REAL="$HOME/.local/bin/agy-real"
 [ -x "$REAL" ] || REAL="$HOME/.local/bin/agy"
 # 自指防护:万一本壳被装到了真二进制的位置,直接停,别递归把机器打爆。

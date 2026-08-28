@@ -11,43 +11,83 @@
 # 换成一个西方主流 ASN(Cloudflare WARP)反而更差。唯一稳定的是主流云厂商在目标
 # 区域自己的 IP 段(比如就用 Google 自己的 GCP,在美区开一台最小机型)。详见 tips/08。
 #
-#   agy-tunnel up|down|status|ip|healthcheck
-# 常驻由 launchd 负责(见 agy-tunnel.plist.template),本脚本 up 只做「没起就起」,幂等。
+#   agy-tunnel up a|b|c | front | down | status | ip | healthcheck
 #
-# 配置:改下面的 HOST,或用环境变量 AGY_TUNNEL_HOST / AGY_TUNNEL_PORT / AGY_TUNNEL_IDENTITY 覆盖。
-# 前置条件:本机 SSH 公钥已加进服务器的 ~/.ssh/authorized_keys(必须免密,
-#          脚本用 BatchMode=yes,要输密码就直接失败)。
+# ── 架构 ────────────────────────────────────────────────────────────────
+#   agy → 7899 (gost 前置口,常驻,永不消失)
+#            ├─ 节点 A: 127.0.0.1:7896  ← ssh -D
+#            ├─ 节点 B: 127.0.0.1:7895  ← ssh -D
+#            └─ 节点 C: 127.0.0.1:7894  ← ssh -D
+#   四个进程各自交给 launchd/systemd 看着(见 agy-tunnel.plist.template)。
 #
-# ⚠ 踩过的坑(详见 tips/13):
-# 1. healthcheck 一探测失败就 kill,单次网络抖动也会误杀——kill 到 launchd 重新拉起
-#    ssh 进程之间有个真空期(本地端口完全消失),同时期跑的任务会直接报错。改成
-#    「连续两次探测都失败才 kill」,一次性抖动不会触发重启。
-# 2. 只用 22 端口连服务器,遇到 GFW 对 22 端口的偶发针对性封锁就彻底连不上
-#    (亲测撞过一次连续 12 分钟)。给服务器 sshd 额外开一个 443(保留 22,别关),
-#    连不上 22 就自动切 443,两条腿走路。
-# 3. 曾尝试用 gost 常驻监听、接力 SSH 上游连接,让本地端口彻底不消失(理论上比
-#    「healthcheck 少误杀」更彻底)。实测 gost 3.x 的 ssh dialer 对部分 OpenSSH
-#    server 有兼容性 bug —— SOCKS5 认证/连接都成功,但请求 direct-tcpip 转发时被
-#    服务器拒绝(`ssh: rejected: connect failed (open failed)`),服务器侧抓包确认
-#    压根没发出对目标地址的连接尝试。GitHub 上有独立的同类报告
-#    (go-gost/gost#257)。如果你也想走这条路,先小范围验证 forward+ssh 能不能
-#    实际转发成功,别直接上生产。
+# 为什么绕成这样,三条经验(详见 tips/13、tips/14):
+#
+# 1. **本地端口一秒都不能消失。** 老方案是 agy 直连 ssh 的 7899,ssh 一断端口整个
+#    没了,agy 拿到 `dial tcp 127.0.0.1:7899: connect: connection refused`,而它
+#    只重试 2.5 秒左右就放弃报错 —— 从 kill 到 ssh 重新握手完成实测有 10~40 秒真空期。
+#    现在 7899 由 gost 常驻占着,ssh 断了只是「上游少一个」,gost 自动切另一条。
+#    ⚠ gost 只做 socks5 → socks5 纯转发,**不要**让它自己去拨 ssh:gost 3.x 的 ssh
+#    dialer 对部分 OpenSSH server 有兼容性 bug(direct-tcpip 被拒,go-gost/gost#257)。
+#    这个坑 tips/13 里记成了「gost 弃用」,其实弃用的只是 ssh dialer 那条路。
+#
+# 2. **上游要三条,不是两条。** 一条 `ssh -D` 是把所有流量挤进同一个 TCP 连接多路复用,
+#    agy 一传大文件(实测单条 203MB)就会把同一条隧道上的所有小请求堵到 8~20 秒
+#    (head-of-line blocking)。表现是「agy 今天特别慢」,但通道完全正常,查线路查不出东西。
+#    多开几条上游让 gost 分摊,是目前最省事的缓解。
+#
+# 3. **全部走 443,22 只当应急。** 22 口在国内网络下会被间歇性针对(几分钟到十几分钟),
+#    而且即使没被完全黑洞,路径质量也明显更差:实测静默期(没有任何任务在跑)22 口
+#    1.5~16 秒乱跳,同一台服务器的 443 口稳定 1.0 秒。所以常规池全走 443;只有三条
+#    上游同时不健康时才判定「443 整个被黑洞」,自动顶到 22,2 小时后自动切回。
+#
+# 配置:改下面几个变量,或用环境变量覆盖。
+# 前置条件:① 服务器 sshd 同时监听 443 和 22(保留 22,别关,配错容易把自己锁在外面);
+#          ② 本机 SSH 公钥已加进服务器 ~/.ssh/authorized_keys(必须免密,脚本用
+#             BatchMode=yes,要输密码就直接失败);③ 本机装了 gost 3.x。
 set -uo pipefail
 
-PORT="${AGY_TUNNEL_PORT:-7899}"
+FRONT_PORT="${AGY_TUNNEL_FRONT_PORT:-7899}"
+PORT_A="${AGY_TUNNEL_PORT_A:-7896}"
+PORT_B="${AGY_TUNNEL_PORT_B:-7895}"
+PORT_C="${AGY_TUNNEL_PORT_C:-7894}"
 HOST="${AGY_TUNNEL_HOST:-ubuntu@YOUR.SERVER.IP.HERE}"
 IDENTITY="${AGY_TUNNEL_IDENTITY:-}"
-REMOTE_IP="${AGY_TUNNEL_REMOTE_IP:-${HOST#*@}}"
-FAILCOUNT_FILE="${TMPDIR:-/tmp}/agy-tunnel-failcount"
+GOST="${AGY_TUNNEL_GOST:-$(command -v gost || echo /opt/homebrew/bin/gost)}"
+LOG="${AGY_TUNNEL_LOG:-/tmp/agy-tunnel.log}"
+
+SSH_PORT=443
+FALLBACK_PORT=22
+FALLBACK22="${TMPDIR:-/tmp}/agy-tunnel-use22"
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+listening() { nc -z -G 1 127.0.0.1 "$1" 2>/dev/null; }
+
+# 平时 443;healthcheck 判定 443 全挂时会 touch FALLBACK22 顶到 22,
+# 标记超过 2 小时自动作废,下一轮 healthcheck 杀掉节点让它们回 443 重试(自愈,不用人管)。
+ssh_port() {
+  [[ -f "$FALLBACK22" ]] && { echo "$FALLBACK_PORT"; return; }
+  echo "$SSH_PORT"
+}
+
+node_conf() { # $1=a|b|c → 回显 "本地端口 ssh端口"
+  local sp; sp="$(ssh_port)"
+  case "$1" in
+    a) echo "$PORT_A $sp" ;;
+    b) echo "$PORT_B $sp" ;;
+    c) echo "$PORT_C $sp" ;;
+    *) echo "" ;;
+  esac
+}
 
 up() {
-  if nc -z -G 1 127.0.0.1 "$PORT" 2>/dev/null; then echo "已在运行(127.0.0.1:$PORT)"; return 0; fi
-  # 服务器若额外开了 443(见坑 2),优先走 443 躲开针对 22 的封锁;3 秒内探测不到就退回 22。
-  # 没开 443 也没关系,探测失败会自然退回 22,行为等同没有这一步。
-  local sshport=22
-  nc -z -G 3 "$REMOTE_IP" 443 2>/dev/null && sshport=443
+  local node="${1:-a}"
+  read -r lport sshport <<<"$(node_conf "$node")"
+  [[ -n "${lport:-}" ]] || { echo "用法: agy-tunnel up a|b|c"; exit 1; }
+  # 端口已被占(多半是上一个自己还没退干净)→ 睡一会儿再让 launchd 重来,
+  # 否则 ssh 立刻 ExitOnForwardFailure 退出,launchd 2 秒一拉变成死循环刷日志。
+  if listening "$lport"; then sleep 30; return 0; fi
   # -N 不开 shell;ExitOnForwardFailure 保证端口占不上就直接退(交给 launchd 重来,别假装活着)
-  ssh -N -D "127.0.0.1:$PORT" \
+  exec ssh -N -D "127.0.0.1:$lport" \
       -p "$sshport" \
       ${IDENTITY:+-i "$IDENTITY"} \
       -o ExitOnForwardFailure=yes \
@@ -57,35 +97,105 @@ up() {
       "$HOST"
 }
 
-down() { pkill -f "ssh -N -D 127.0.0.1:$PORT" && echo "已停"; }
-
-status() {
-  if nc -z -G 1 127.0.0.1 "$PORT" 2>/dev/null; then echo "✓ 通道在(127.0.0.1:$PORT)"; else echo "✗ 通道不在"; return 1; fi
+# 前置口:多个上游写在**同一跳**里(逗号分隔)才是「故障转移」;写成多个 -F 是「串联多跳」,
+# 那样第一个死了整条链就废了 —— 别改成 -F ... -F ...
+# retries=3 让**第一个**请求就能切过去(实测不加 retries 时,节点刚死的首个请求仍会失败一次)。
+front() {
+  if listening "$FRONT_PORT"; then sleep 30; return 0; fi
+  exec "$GOST" -L "socks5://127.0.0.1:$FRONT_PORT?retries=3" \
+               -F "socks5://127.0.0.1:$PORT_A,127.0.0.1:$PORT_B,127.0.0.1:$PORT_C"
 }
 
-ip() { curl -s --max-time 10 --proxy "socks5h://127.0.0.1:$PORT" https://api.ipify.org; echo; }
+kill_all_nodes() {
+  pkill -f "ssh -N -D 127.0.0.1:$PORT_A" 2>/dev/null || true
+  pkill -f "ssh -N -D 127.0.0.1:$PORT_B" 2>/dev/null || true
+  pkill -f "ssh -N -D 127.0.0.1:$PORT_C" 2>/dev/null || true
+}
 
-# 端口占着但不转发的"卡死"状态 nc 探测不出来(TCP 能连上,只是没数据)——
-# 真走一次代理请求才能测出来。由 launchd 每几分钟跑一次(见坑 1,连续两次
-# 都失败才 kill,避免单次抖动误杀制造一次不必要的真空期)。
-healthcheck() {
-  if curl -s --max-time 10 --proxy "socks5h://127.0.0.1:$PORT" https://api.ipify.org >/dev/null 2>&1; then
-    rm -f "$FAILCOUNT_FILE"
-    return 0
-  fi
+down() {
+  kill_all_nodes
+  pkill -f "socks5://127.0.0.1:$FRONT_PORT" 2>/dev/null
+  echo "已停(注意 launchd 会把它们拉回来,要彻底停用 launchctl bootout)"
+}
+
+status() {
+  local ok=0 sp; sp="$(ssh_port)"
+  listening "$FRONT_PORT" && { echo "✓ 前置口 $FRONT_PORT"; ok=1; } || echo "✗ 前置口 $FRONT_PORT 不在"
+  [[ "$sp" == "$FALLBACK_PORT" ]] && echo "⚠ 当前处于 22 口应急模式(443 曾全挂,标记 $FALLBACK22)"
+  listening "$PORT_A" && echo "✓ 节点 A $PORT_A (ssh $sp)" || echo "✗ 节点 A $PORT_A 不在"
+  listening "$PORT_B" && echo "✓ 节点 B $PORT_B (ssh $sp)" || echo "✗ 节点 B $PORT_B 不在"
+  listening "$PORT_C" && echo "✓ 节点 C $PORT_C (ssh $sp)" || echo "✗ 节点 C $PORT_C 不在"
+  [[ "$ok" == 1 ]] || return 1
+}
+
+ip() { curl -s --max-time 20 --proxy "socks5h://127.0.0.1:$FRONT_PORT" https://api.ipify.org; echo; }
+
+# ⚠ 健康检查要测「通且够快」,不能只测「通不通」。
+#   端口占着但不转发的卡死状态 nc 探测不出来(TCP 能连上,只是没数据);
+#   更阴的是「通但极慢」—— 实测 22 口那条静默期还能跑到 16 秒,只看通不通完全抓不到,
+#   而 agy 那边就表现为「今天特别慢」。8 秒是阈值,通道正常时是 1~1.5 秒。
+# ⚠ 连续 3 次失败才 kill:单次抖动误杀制造的真空期,比隧道本身的问题更伤(tips/13)。
+check_node() { # $1=a|b|c → 0=好 1=不好(超时/太慢)
+  local node="$1"
+  read -r lport _ <<<"$(node_conf "$node")"
+  local f="${TMPDIR:-/tmp}/agy-tunnel-failcount-$node"
+  local t
+  t=$(curl -s --max-time 25 --proxy "socks5h://127.0.0.1:$lport" \
+        -o /dev/null -w "%{time_total}" https://api.ipify.org 2>/dev/null)
+  local bad=1
+  if [[ -n "$t" ]] && awk "BEGIN{exit !($t < 8)}" 2>/dev/null; then bad=0; fi
+  if [[ "$bad" == 0 ]]; then rm -f "$f"; return 0; fi
+
   local fails=1
-  [[ -f "$FAILCOUNT_FILE" ]] && fails=$(($(cat "$FAILCOUNT_FILE" 2>/dev/null || echo 0) + 1))
-  echo "$fails" > "$FAILCOUNT_FILE"
-  if [[ "$fails" -lt 2 ]]; then
-    echo "$(date '+%F %T') 健康检查失败(第 ${fails} 次,再抖一次才 kill)" >> "${TMPDIR:-/tmp}/agy-tunnel.log"
-    return 0
+  [[ -f "$f" ]] && fails=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
+  echo "$fails" > "$f"
+  if [[ "$fails" -lt 3 ]]; then
+    log "节点 $node 不健康(耗时=${t:-超时},第 ${fails} 次,连续 3 次才 kill)"
+    return 1
   fi
-  rm -f "$FAILCOUNT_FILE"
-  echo "$(date '+%F %T') 连续两次健康检查失败,kill 重启" >> "${TMPDIR:-/tmp}/agy-tunnel.log"
-  pkill -f "ssh -N -D 127.0.0.1:$PORT" 2>/dev/null || true
+  rm -f "$f"
+  log "节点 $node 连续三次不健康(耗时=${t:-超时}),kill 重启"
+  pkill -f "ssh -N -D 127.0.0.1:$lport" 2>/dev/null || true
+  return 1
+}
+
+healthcheck() {
+  # 前置口是本机进程,几乎不会挂;挂了让 launchd 拉,这里只记一笔
+  listening "$FRONT_PORT" || log "前置口 $FRONT_PORT 不在(等 launchd 拉起)"
+
+  # 22 口应急标记过期(2 小时)→ 撤掉并杀掉全部节点回 443 重试。不自愈就会一直赖在烂线路上。
+  if [[ -f "$FALLBACK22" ]]; then
+    local now age mt
+    now=$(date +%s)
+    mt=$(stat -f %m "$FALLBACK22" 2>/dev/null || stat -c %Y "$FALLBACK22" 2>/dev/null || echo "$now")
+    age=$(( now - mt ))
+    if [[ "$age" -gt 7200 ]]; then
+      rm -f "$FALLBACK22"
+      log "22 口应急标记已满 2 小时,撤销,杀掉全部节点回 443 重试"
+      kill_all_nodes
+      return 0   # 本轮不再体检:节点刚被杀,还没拉起来,测什么都是失败
+    fi
+  fi
+
+  local good=0
+  check_node a && good=$((good+1))
+  check_node b && good=$((good+1))
+  check_node c && good=$((good+1))
+
+  # 三条全废 = 多半是 443 整个端口被针对性黑洞,顶到 22 应急。
+  if [[ "$good" == 0 && ! -f "$FALLBACK22" ]]; then
+    touch "$FALLBACK22"
+    log "三个节点全部不健康,判定 443 被黑洞,切到 22 口应急(2 小时后自动切回)"
+    kill_all_nodes
+  fi
 }
 
 case "${1:-status}" in
-  up) up ;; down) down ;; status) status ;; ip) ip ;; healthcheck) healthcheck ;;
-  *) echo "用法: agy-tunnel up|down|status|ip|healthcheck"; exit 1 ;;
+  up) shift; up "${1:-a}" ;;
+  front) front ;;
+  down) down ;;
+  status) status ;;
+  ip) ip ;;
+  healthcheck) healthcheck ;;
+  *) echo "用法: agy-tunnel up a|b|c | front | down | status | ip | healthcheck"; exit 1 ;;
 esac

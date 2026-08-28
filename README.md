@@ -19,16 +19,19 @@
 - [11 · 自定义状态栏：一眼看到机型、执行模式、上下文余量和额度](tips/11-custom-statusline.md)
 - [12 · 汉化 /resume 英文会话标题：包装层退出时自动异步回写 SQLite](tips/12-auto-translate-resume-titles.md)
 - [13 · 隧道断过一次，任务就跟着挂：重启真空期 + 22 端口偶发黑洞](tips/13-tunnel-restart-gap-and-ssh22-blackhole.md)
+- [14 · 隧道没断，但 agy 特别慢：单条 ssh 的队头阻塞 + 只测「通不通」的健康检查](tips/14-tunnel-slow-not-broken-hol-blocking.md)
+- [15 · 开太多 agy 实例会互相踢下线：OAuth token 刷新竞争导致 401](tips/15-multiple-instances-refresh-token-race-401.md)
 
 ## 脚本
 
 - [`scripts/genimg.sh`](scripts/genimg.sh) — 一行命令出图
 - [`scripts/agy-do`](scripts/agy-do) — 按任务卡派 agy 施工（worktree 隔离 + 逃逸检测 + 验收摘要，`--async` 后台跑）
 - [`scripts/agy-runs`](scripts/agy-runs) — 列出后台施工：在跑 / 待验收 / 失败，见 tip 05
-- [`scripts/agy-tunnel`](scripts/agy-tunnel) — 自有服务器 SOCKS5 出口（up/down/status/ip）
+- [`scripts/agy-tunnel`](scripts/agy-tunnel) — 自有服务器 SOCKS5 出口：gost 前置口 + 三条 ssh 上游故障转移，见 tip 13/14
 - [`scripts/agy-wrapper`](scripts/agy-wrapper) — 只给 agy 注入这条出口的代理外壳，通道断了自动降级；会话退出自动异步汉化标题
 - [`scripts/agy-title-zh`](scripts/agy-title-zh) — 扫描并汉化 SQLite 会话标题，见 tip 12
-- [`scripts/agy-tunnel.plist.template`](scripts/agy-tunnel.plist.template) — launchd 常驻（开机自启 + 掉线重连）
+- [`scripts/agy-ps`](scripts/agy-ps) — 列出活着的 agy 实例并清掉闲置的（多开会互刷 OAuth token 报 401），见 tip 15
+- [`scripts/agy-tunnel.plist.template`](scripts/agy-tunnel.plist.template) — launchd 常驻（开机自启 + 掉线重连），现在需要 4 个 job + 1 个健康检查 job
 - [`scripts/statusline.sh`](scripts/statusline.sh) — 状态栏脚本，见 tip 11
 
 ## 适用环境

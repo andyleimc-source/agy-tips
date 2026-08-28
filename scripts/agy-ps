@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# agy-ps —— 列出当前活着的 agy 实例(带存活时长、CPU、工作目录),-k 清掉闲置的。
+#
+# 为什么需要:每个 agy 实例都带一个「每小时刷 OAuth token」的后台协程,而 token 全局只有
+# 一份。实例一多,A 刷出来的新 token 就把 B 手里的作废,B 下次调模型吃 401
+# UNAUTHENTICATED —— agy 在 -p 模式下只报一句 "Agent execution terminated due to error",
+# 看着像断网,排查会被带到代理上去(2026-08-28 就绕了一圈)。
+#
+#   agy-ps      只看
+#   agy-ps -k   杀掉「CPU 近似 0 且已存活 > 2 小时」的闲置实例(当前正在跑的不动)
+set -uo pipefail
+PAT='\.local/bin/agy .*--dangerously-skip-permissions'
+KILL=0
+[[ "${1:-}" == "-k" ]] && KILL=1
+
+rows=$(ps -Ao pid,etime,%cpu,command | grep -E "$PAT" | grep -v grep)
+[[ -z "$rows" ]] && { echo "没有 agy 实例在跑"; exit 0; }
+
+printf "%-8s %-14s %-6s %s\n" PID 存活 CPU% 工作目录
+while read -r pid etime cpu rest; do
+  dir=$(sed -E 's/.*--add-dir ([^ ]+).*/\1/' <<<"$rest")
+  [[ "$dir" == "$rest" ]] && dir="(无)"
+  # 闲置判据:CPU < 1% 且存活 > 2 小时。
+  # etime 三种格式:MM:SS / HH:MM:SS / D-HH:MM:SS —— 早先按冒号个数数会把 90 分钟
+  # 也算成「超 2 小时」,这里老老实实换算成秒。
+  secs=$(awk -F'[-:]' '{ if (NF==4) print $1*86400+$2*3600+$3*60+$4;
+                         else if (NF==3) print $1*3600+$2*60+$3;
+                         else print $1*60+$2 }' <<<"$etime")
+  idle=0
+  if awk "BEGIN{exit !($cpu < 1)}" && [[ "${secs:-0}" -gt 7200 ]]; then idle=1; fi
+  mark=""; [[ "$idle" == 1 ]] && mark="  ← 闲置"
+  printf "%-8s %-14s %-6s %s%s\n" "$pid" "$etime" "$cpu" "$dir" "$mark"
+  if [[ "$KILL" == 1 && "$idle" == 1 ]]; then
+    kill "$pid" 2>/dev/null && echo "         已杀 $pid"
+  fi
+done <<<"$rows"
+
+[[ "$KILL" == 0 ]] && echo && echo "要清掉标了「闲置」的:agy-ps -k"
+exit 0
