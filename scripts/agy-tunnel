@@ -57,7 +57,9 @@ LOG="${AGY_TUNNEL_LOG:-/tmp/agy-tunnel.log}"
 
 SSH_PORT=443
 FALLBACK_PORT=22
-FALLBACK22="${TMPDIR:-/tmp}/agy-tunnel-use22"
+# ⚠ 别改成 ${TMPDIR}:macOS 上 TMPDIR 是每会话独立的 /var/folders/…,
+#   launchd 跑的 healthcheck 和你手敲的 status 会看到两份不同的文件。
+FALLBACK22="/tmp/agy-tunnel-use22"
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 listening() { nc -z -G 1 127.0.0.1 "$1" 2>/dev/null; }
@@ -138,19 +140,28 @@ ip() { curl -s --max-time 20 --proxy "socks5h://127.0.0.1:$FRONT_PORT" https://a
 check_node() { # $1=a|b|c → 0=好 1=不好(超时/太慢)
   local node="$1"
   read -r lport _ <<<"$(node_conf "$node")"
-  local f="${TMPDIR:-/tmp}/agy-tunnel-failcount-$node"
+  local f="/tmp/agy-tunnel-failcount-$node"   # 同上,别改成 $TMPDIR
   local t
   t=$(curl -s --max-time 25 --proxy "socks5h://127.0.0.1:$lport" \
         -o /dev/null -w "%{time_total}" https://api.ipify.org 2>/dev/null)
+  # ⚠⚠ 这个阈值**只在没有 agy 在跑的时候**才作数。agy 传大文件时,承载它的那条隧道上的
+  # 小请求本来就会被队头阻塞到 8~20 秒(见 tips/14,实测有单条 203MB、跑了 40 分钟的传输),
+  # 那不是节点坏了,是它正忙。若照样按 8 秒判失败,3 轮之后(默认 180 秒一轮,约 9 分钟)
+  # 就会把正在传输的那条 ssh 杀掉 —— 正是 tips/13 那类「健康检查自己制造事故」的翻版。
+  # 有 agy 在跑时退回只看通不通,等它跑完再严格量。
+  local threshold=8
+  if [[ "$(pgrep -f "\.local/bin/agy " 2>/dev/null | wc -l | tr -d " ")" != "0" ]]; then
+    threshold=25
+  fi
   local bad=1
-  if [[ -n "$t" ]] && awk "BEGIN{exit !($t < 8)}" 2>/dev/null; then bad=0; fi
+  if [[ -n "$t" ]] && awk "BEGIN{exit !($t < $threshold)}" 2>/dev/null; then bad=0; fi
   if [[ "$bad" == 0 ]]; then rm -f "$f"; return 0; fi
 
   local fails=1
   [[ -f "$f" ]] && fails=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
   echo "$fails" > "$f"
   if [[ "$fails" -lt 3 ]]; then
-    log "节点 $node 不健康(耗时=${t:-超时},第 ${fails} 次,连续 3 次才 kill)"
+    log "节点 $node 不健康(耗时=${t:-超时},阈值 ${threshold}s,第 ${fails} 次,连续 3 次才 kill)"
     return 1
   fi
   rm -f "$f"
